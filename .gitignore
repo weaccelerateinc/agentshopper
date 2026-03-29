@@ -1,0 +1,14 @@
+# Personal config (contains API keys)
+account-creator/references/config.md
+deal-digest/references/config.json
+
+# Runtime state
+deal-digest/references/ingest-state.json
+deal-digest/references/deals-active.json
+deal-digest/references/user-preferences.json
+
+# Packaged skills
+*.skill
+
+# OS
+.DS_Store

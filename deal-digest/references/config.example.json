@@ -1,0 +1,8 @@
+{
+  "agentmail_api_key": "",
+  "inbox_email": "",
+  "digest_frequency": "daily",
+  "digest_time": "09:00",
+  "digest_channel": "slack",
+  "timezone": "America/Los_Angeles"
+}
