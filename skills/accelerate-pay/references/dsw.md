@@ -4,78 +4,62 @@
 - **Vantiv/Worldpay eProtect** via cross-origin iframe (`id="vantiv-payframe"`)
 - iframe URL contains: `request.eprotect.vantivcnp.com`
 
-## Field Tab Order (inside iframe)
-1. Card Number (text input) — auto-focused after first Tab from iframe click
-2. Expiry Month (select dropdown) — `id="expMonth"`, values: `"01"` through `"12"`
-3. Expiry Year (select dropdown) — `id="expYear"`, values: two-digit years `"26"`, `"27"`, etc.
-4. Security Code / CVV (password-type input)
+## Field IDs (inside iframe)
+- Card number: `id="accountNumber"` (type=tel, maxLength=19)
+- Expiry month: `id="expMonth"` (select, values: "01"–"12")
+- Expiry year: `id="expYear"` (select, values: two-digit "26", "27", etc.)
+- CVV: `id="cvv"` (type=tel, maxLength=4)
 
-## Fast Fill Sequence
+## Fast Fill — Single CDP Call (replaces 22 keyboard presses)
 
-### 1. Card number + CVV via keyboard press
-```
-browser act: click selector="iframe#vantiv-payframe"
-browser act: press key="Tab"
-# Type card number one digit at a time with press
-browser act: press key="4"
-browser act: press key="1"
-... (all 16 digits)
-# Skip month/year with Tabs (fix via CDP after)
-browser act: press key="Tab"  → month
-browser act: press key="Tab"  → year
-browser act: press key="Tab"  → CVV
-# Type CVV digits
-browser act: press key="6"
-browser act: press key="1"
-browser act: press key="9"
-```
+**All four fields can be set in ONE CDP WebSocket call:**
 
-### 2. Expiry month + year via CDP WebSocket
-Find the iframe targetId:
 ```bash
-curl -s http://127.0.0.1:18800/json | python3 -c "
-import sys, json
-for t in json.load(sys.stdin):
-    if 'eprotect' in t.get('url',''):
-        print(t['webSocketDebuggerUrl']); break
-"
+bash scripts/fill-vantiv-all.sh <card_number> <exp_month> <exp_year> <cvv>
+# Example: bash scripts/fill-vantiv-all.sh 4147099111428502 11 26 619
 ```
 
-Set month and year (use IIFE to avoid redeclaration errors):
-```bash
-node --experimental-websocket -e "
-const ws = new WebSocket('<WS_URL_FROM_ABOVE>');
-ws.onopen = () => {
-  ws.send(JSON.stringify({
-    id: 1,
-    method: 'Runtime.evaluate',
-    params: {
-      expression: \"(function(){var mo=document.getElementById('expMonth');var yr=document.getElementById('expYear');mo.value='<MM>';mo.dispatchEvent(new Event('change',{bubbles:true}));yr.value='<YY>';yr.dispatchEvent(new Event('change',{bubbles:true}));return 'month='+mo.value+' year='+yr.value})()\"
-    }
-  }));
-};
-ws.onmessage = (e) => {
-  const msg = JSON.parse(e.data);
-  if(msg.id===1){console.log(msg.result.value||JSON.stringify(msg.result));ws.close();process.exit(0);}
-};
-setTimeout(()=>{process.exit(1);},5000);
-"
-```
+This replaces the old approach of 16 card digit presses + 3 Tab + 3 CVV presses.
 
-Replace `<MM>` with two-digit month (e.g., `11`) and `<YY>` with two-digit year (e.g., `26`).
+### Prerequisites before running the script
+1. Must be on DSW pay step (`/check-out/pay`)
+2. Vantiv iframe must be loaded (wait ~5s after page load)
+3. Scroll iframe into view is NOT required for CDP (only needed for keyboard approach)
 
-### 3. Click Continue to Review
-```
-browser act: evaluate → find button with text "Continue to Review" → click
-```
+### How it works
+- Uses `curl` to find the iframe's WebSocket debugger URL from Chrome DevTools
+- Connects via WebSocket and runs `Runtime.evaluate` inside the iframe context
+- Sets card number and CVV using the native HTMLInputElement value setter + input/change events
+- Sets expiry month and year using direct `.value` assignment + change events
+- All in a single round trip
 
-## DSW Checkout Notes
-- **Checkout URL**: Pay step is at `/check-out/pay`
-- **Two checkout buttons on bag page**: Always use `button.pay-with-card-button` to avoid PayPal popup
-- **10% welcome code**: Applied on the bag page under "Enter offer code" — some items (Nike) are excluded from promos
+## DSW Checkout Fast Path
+
+### Optimal sequence (5 tool calls for payment step):
+1. `evaluate`: scroll iframe into view (optional for CDP but helps for screenshots)
+2. `exec`: run `fill-vantiv-all.sh` with materialized card details
+3. `evaluate`: click "Continue to Review" button
+4. `screenshot`: final review page (only screenshot in entire flow)
+
+### Full checkout sequence:
+1. Navigate to product URL
+2. Evaluate: select size + click "Add to Bag"
+3. Navigate to /shopping-bag
+4. Evaluate: click `button.pay-with-card-button`
+5. Wait for /check-out/ship
+6. If address empty: type 4 fields + select state
+7. Evaluate: click "Continue to Payment" + handle USPS suggestion
+8. Wait for /check-out/pay + iframe load (~5s)
+9. Exec: `fill-vantiv-all.sh` (single CDP call fills all card fields)
+10. Evaluate: click "Continue to Review"
+11. Screenshot review page
+
+**Expected time: ~3-4 minutes** (down from 8+ minutes)
 
 ## Gotchas
-- **Variable redeclaration**: If running multiple CDP evaluations in the same iframe session, use IIFE `(function(){...})()` wrappers to avoid `SyntaxError: Identifier has already been declared`
-- **Year values are two-digit**: `"26"` not `"2026"`
-- **Month values are two-digit**: `"11"` not `"November"`
-- **Keyboard press works for text inputs but NOT for selects** inside the iframe — always use CDP for dropdowns
+- **Wait for iframe**: The Vantiv iframe takes ~5s to load after the pay page renders
+- **Year values are two-digit**: "26" not "2026"
+- **Month values are two-digit**: "11" not "November"
+- **Two checkout buttons on bag page**: Always use `button.pay-with-card-button`
+- **Unisex sizing**: Some Reebok shoes show "Women's X / Men's Y" — search for "Men's <size>of" in button text
+- **Address may not auto-fill**: If new browser session, DSW requires login + manual address entry

@@ -1,20 +1,11 @@
 ---
 name: accelerate-pay
-description: Fill credit card payment forms using Accelerate wallet materialization. Use when a checkout page, payment form, or any website asks for credit card number, expiry, and CVV — and the user wants to pay with Accelerate. Triggers on "pay with accelerate", "fill in card", "use accelerate", "enter payment", "fill payment", or when stopped at a payment step during checkout. Requires an active Accelerate session (auth via OTP).
+description: Fill credit card payment forms using Accelerate wallet materialization. Use when a checkout page, payment form, or any website asks for credit card number, expiry, and CVV — and the user wants to pay with Accelerate. Triggers on "pay with accelerate", "fill in card", "use accelerate", "enter payment", "fill payment", or when stopped at a payment step during checkout. Requires an active Accelerate session (auth via OTP to <FIRST_NAME>'s phone).
 ---
 
 # Accelerate Pay
 
 Fill credit card fields on any website using materialized card details from the Accelerate wallet.
-
-## Setup
-
-1. **Configure** `references/config.md` with your Accelerate profile:
-   - Phone number (for OTP)
-   - First name, last name, email
-   - Preferred payment source ID (from `node cli.js cards`)
-2. **Install** the Accelerate CLI: `cd <repo>/accelerate && npm install`
-3. **Authenticate** at least once to create a session
 
 ## Prerequisites
 
@@ -31,7 +22,7 @@ Before filling payment on a known merchant, read its reference file for the exac
 ## Quick Flow
 
 1. Check session status
-2. If not authenticated → run auth flow (OTP to user's phone)
+2. If not authenticated → run auth flow (OTP to <FIRST_NAME>'s phone)
 3. Materialize payment for the order amount
 4. Fill the card fields in the browser
 5. Screenshot and confirm — do NOT submit payment unless user says so
@@ -39,17 +30,17 @@ Before filling payment on a known merchant, read its reference file for the exac
 ## Auth Flow (only when session is expired)
 
 ```bash
-cd <repo>/accelerate
+cd ~/. openclaw/workspace/skills/agent-shop/accelerate
 node cli.js session-status
 ```
 
 If expired or no session:
 
 ```bash
-node cli.js auth-start --phone <PHONE> --first-name <FIRST> --last-name <LAST> --email <EMAIL>
+node cli.js auth-start --phone <PHONE> --first-name <FIRST_NAME> --last-name <LAST_NAME> --email <EMAIL>
 ```
 
-Ask user for OTP (sent to their phone), then:
+Ask user for OTP (sent to <FIRST_NAME>'s phone), then:
 
 ```bash
 node cli.js auth-verify --phone <PHONE> --otp <CODE>
@@ -60,7 +51,7 @@ node cli.js auth-verify --phone <PHONE> --otp <CODE>
 ### 1. Check session
 
 ```bash
-cd <repo>/accelerate
+cd ~/.openclaw/workspace/skills/agent-shop/accelerate
 node cli.js session-status
 ```
 
@@ -72,7 +63,8 @@ Confirm `is_authenticated: true`. If not, run auth flow above.
 node cli.js cards
 ```
 
-Use the preferred card from `references/config.md`.
+<FIRST_NAME>'s preferred card: Capital One ending in 8502
+- Payment source ID: `<PAYMENT_SOURCE_ID>`
 
 ### 3. Materialize
 
@@ -88,6 +80,14 @@ The response returns:
 - `cvv` — security code
 
 ### 4. Fill payment form in browser
+
+**For DSW (Vantiv iframe):** Set ALL card fields in a single CDP call — no keyboard presses needed:
+```bash
+bash scripts/fill-vantiv-all.sh <card_number> <exp_month_2digit> <exp_year_2digit> <cvv>
+```
+Wait ~5s for the iframe to load after reaching `/check-out/pay`, then run the script. See `references/dsw.md` for the full fast path.
+
+**For other merchants:** Follow the general approach below.
 
 Use the browser tool to type the materialized card details into the payment form fields:
 
@@ -109,7 +109,7 @@ Many merchants use **cross-origin payment iframes** (Vantiv/Worldpay eProtect, S
 **Step 1: Card number and CVV** — Click the iframe element, then use `press` key actions to type digits. Tab navigates between fields inside the iframe.
 
 ```
-browser act: click selector="iframe#<IFRAME_ID>"
+browser act: click selector="iframe#vantiv-payframe"
 browser act: press key="Tab"  (focus card number)
 browser act: press key="4"    (type each digit)
 browser act: press key="1"
@@ -117,53 +117,45 @@ browser act: press key="1"
 browser act: press key="Tab"  (move to next field)
 ```
 
-**Step 2: Select/dropdown fields (expiry month/year)** — Keyboard `press` works for text inputs but NOT for `<select>` dropdowns inside cross-origin iframes. For those, use **CDP WebSocket** to execute JS directly inside the iframe:
+**Step 2: Select/dropdown fields (expiry month)** — Keyboard `press` works for text inputs but NOT for `<select>` dropdowns inside cross-origin iframes. For those, use **CDP WebSocket** to execute JS directly inside the iframe:
 
-1. Find the iframe's WebSocket URL:
-```bash
-curl -s http://127.0.0.1:18800/json | python3 -c "
-import sys, json
-for t in json.load(sys.stdin):
-    if '<PAYMENT_PROVIDER_DOMAIN>' in t.get('url',''):
-        print(t['webSocketDebuggerUrl']); break
-"
-```
+1. List browser tabs to find the iframe's `targetId` (type=iframe, URL contains the payment provider domain)
+2. Connect via CDP WebSocket and run `Runtime.evaluate`:
 
-2. Set select values via CDP:
 ```bash
 node --experimental-websocket -e "
-const ws = new WebSocket('<WS_URL>');
+const ws = new WebSocket('ws://127.0.0.1:18800/devtools/page/<IFRAME_TARGET_ID>');
 ws.onopen = () => {
   ws.send(JSON.stringify({
     id: 1,
     method: 'Runtime.evaluate',
     params: {
-      expression: \"(function(){var mo=document.getElementById('<MONTH_ID>');var yr=document.getElementById('<YEAR_ID>');mo.value='<MM>';mo.dispatchEvent(new Event('change',{bubbles:true}));yr.value='<YY>';yr.dispatchEvent(new Event('change',{bubbles:true}));return 'month='+mo.value+' year='+yr.value})()\"
+      expression: \"const m=document.getElementById('expMonth');if(m){m.value='<MM>';m.dispatchEvent(new Event('change',{bubbles:true}));'ok'}else{'not found'}\"
     }
   }));
 };
 ws.onmessage = (e) => {
   const msg = JSON.parse(e.data);
-  if(msg.id===1){console.log(msg.result.value||JSON.stringify(msg.result));ws.close();process.exit(0);}
+  if(msg.id===1){console.log(JSON.stringify(msg.result));ws.close();process.exit(0);}
 };
 setTimeout(()=>{process.exit(1);},5000);
 "
 ```
 
-**Important:** Always wrap CDP expressions in IIFE `(function(){...})()` to avoid variable redeclaration errors across multiple evaluations.
+Replace `<IFRAME_TARGET_ID>` with the iframe's targetId from `browser tabs`, and `<MM>` with the two-digit month (e.g., `11` for November).
 
 **Known iframe providers and their field IDs:**
-- **Vantiv/Worldpay eProtect**: iframe `id="vantiv-payframe"`, month `id="expMonth"`, year `id="expYear"` — see `references/dsw.md`
-- **Stripe Elements**: Separate iframes per field — each has its own targetId
+- **Vantiv/Worldpay eProtect**: `expMonth` (select), `expYear` (select), card number (input), CVV (input)
+- **Stripe Elements**: Uses separate iframes per field — each has its own targetId
 
 #### Billing address
-If billing address is required, use the checkout profile from the checkout-assistant skill's `references/checkout-profile.json`.
+If billing address is required, use the checkout profile from `skills/checkout-assistant/references/checkout-profile.json`.
 
 ### 5. Stop and confirm
 
 After filling card fields:
-- Take a screenshot of the final checkout/review page
-- Report what was filled (last 4 digits only)
+- Take a screenshot
+- Report what was filled
 - Do NOT click "Place Order" / "Submit" / "Pay Now" unless the user explicitly asks
 
 ## Important Notes

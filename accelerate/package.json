@@ -1,0 +1,23 @@
+{
+  "name": "accelerate-mcp",
+  "version": "0.1.0",
+  "description": "Standalone MCP server and CLI for Accelerate wallet authentication and payment materialization",
+  "type": "module",
+  "bin": {
+    "accelerate-mcp": "./index.js",
+    "accelerate-cli": "./cli.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.27.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "accelerate",
+    "wallet",
+    "payments"
+  ],
+  "license": "MIT"
+}
